@@ -1,371 +1,435 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LP-2010 安全大師 BLE HMI (脈衝鎖)</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-        body { font-family: 'Inter', sans-serif; }
-        .log-container { height: 200px; overflow-y: scroll; scroll-behavior: smooth; }
-    </style>
-</head>
-<body class="bg-gray-100 min-h-screen p-4 sm:p-8">
+import React, { useState, useCallback, useMemo, useRef } from 'react';
 
-    <!-- Tailwind CSS configuration (using default) -->
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        'primary': '#3b82f6', /* Blue 500 */
-                        'danger': '#ef4444', /* Red 500 */
-                        'success': '#10b981', /* Emerald 500 */
-                        'warning': '#f59e0b', /* Amber 500 */
-                    }
-                }
-            }
+// 假設 Tailwind CSS 在環境中可用
+
+// --- 藍牙服務和特性 UUIDs ---
+const BLE_UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e'; 
+const BLE_RX_CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // 寫入（App 發送指令到 ESP32）
+const BLE_TX_CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // 通知（ESP32 發送數據到 App）
+
+// 指令結尾定義
+const APP_TERMINATOR = '\n'; 
+
+// 系統狀態
+const SecurityState = {
+  DISARMED: '解除設防',
+  ARMED: '設防中',
+  ALARM_TRIGGERED: '🚨 警報觸發！',
+};
+
+const App = () => {
+  const [connectionStatus, setConnectionStatus] = useState('未連線');
+  const [isConnected, setIsConnected] = useState(false);
+  const [securityState, setSecurityState] = useState(SecurityState.DISARMED);
+  const [appLog, setAppLog] = useState([]);
+  const [errorMessage, setErrorMessage] = useState(null);
+  const [isSending, setIsSending] = useState(false);
+  const [isBusy, setIsBusy] = useState(false); // 用於長時間操作 (例如讀取日誌)
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalMessage, setModalMessage] = useState('');
+  
+  // 手動輸出狀態追蹤
+  const [isLightOn, setIsLightOn] = useState(false);
+  const [isBuzzerOn, setIsBuzzerOn] = useState(false);
+
+  // Web Bluetooth 實例參考
+  const deviceRef = useRef(null);
+  const rxCharacteristicRef = useRef(null);
+  const txCharacteristicRef = useRef(null);
+  const pendingDataRef = useRef(''); // 用於累積從 ESP32 接收到的數據
+
+  // --- 輔助函式 ---
+
+  const showMessage = useCallback((message) => {
+    setModalMessage(message);
+    setIsModalOpen(true);
+  }, []);
+
+  const appendLog = useCallback((message) => {
+    // 保留最新的 10 條日誌，新的在最上面
+    setAppLog(prev => [{ timestamp: Date.now(), message, id: Math.random() }, ...prev.slice(0, 9)]); 
+  }, []);
+
+  const updateSecurityState = useCallback((status) => {
+    const trimmedStatus = status.trim();
+    if (trimmedStatus === 'ARMED') {
+      setSecurityState(SecurityState.ARMED);
+      setIsLightOn(false); // 系統設防後關閉手動輸出
+      setIsBuzzerOn(false);
+    } else if (trimmedStatus === 'DISARMED') {
+      setSecurityState(SecurityState.DISARMED);
+      setIsLightOn(false); // 系統解除後關閉手動輸出
+      setIsBuzzerOn(false);
+    } else if (trimmedStatus.startsWith('ALARM')) {
+      setSecurityState(SecurityState.ALARM_TRIGGERED);
+      showMessage('🚨 警報已觸發！請解除設防。');
+      setIsLightOn(true); // 警報狀態下輸出會開啟
+      setIsBuzzerOn(true);
+    }
+  }, [showMessage]);
+
+  // 將 ArrayBuffer 轉換為字串
+  const decoder = useMemo(() => new TextDecoder('utf-8'), []);
+
+  // --- 藍牙事件處理 ---
+
+  const handleDisconnect = useCallback(() => {
+    setIsConnected(false);
+    setConnectionStatus('已斷開連線');
+    deviceRef.current = null;
+    rxCharacteristicRef.current = null;
+    txCharacteristicRef.current = null;
+    appendLog('LOG: 藍牙裝置已斷開。');
+    setSecurityState(SecurityState.DISARMED);
+    setIsBusy(false);
+    setIsLightOn(false);
+    setIsBuzzerOn(false);
+  }, [appendLog]);
+
+  // 處理從 ESP32 接收到的數據 (Notify 事件)
+  const handleCharacteristicValueChanged = useCallback((event) => {
+    const value = event.target.value;
+    const receivedText = decoder.decode(value);
+    pendingDataRef.current += receivedText;
+
+    const parts = pendingDataRef.current.split(APP_TERMINATOR);
+    pendingDataRef.current = parts.pop();
+
+    parts.forEach(msg => {
+      const trimmedMsg = msg.trim();
+      if (!trimmedMsg) return;
+
+      if (trimmedMsg.startsWith('STATUS:')) {
+        updateSecurityState(trimmedMsg.substring(7));
+      } else if (trimmedMsg.startsWith('ALERT:')) {
+        showMessage(trimmedMsg.substring(6));
+      } else if (trimmedMsg.startsWith('LOG:I/O OUT 設定為')) {
+        // 從 I/O OUT 設置指令回覆中更新手動輸出狀態
+        // 範例: LOG:I/O OUT 設定為 0x1A
+        const hexMatch = trimmedMsg.match(/0x([0-9A-F]{2})$/i);
+        if (hexMatch) {
+            const hexValue = parseInt(hexMatch[1], 16);
+            // D4 (0x10) 為照明
+            setIsLightOn(!!(hexValue & 0x10)); 
+            // D5 (0x20) 為蜂鳴器
+            setIsBuzzerOn(!!(hexValue & 0x20));
         }
-    </script>
+      }
+      
+      // 記錄所有接收到的完整訊息
+      appendLog(`RX: ${trimmedMsg}`);
 
-    <div class="max-w-4xl mx-auto">
-        <header class="text-center mb-8">
-            <h1 class="text-3xl font-bold text-gray-800">LP-2010 安全系統 HMI</h1>
-            <p class="text-sm text-gray-500">透過藍牙與 ESP32 連線 (適用 $5$ 秒脈衝鎖)</p>
-        </header>
+      // 檢查日誌結束標記
+      if (trimmedMsg.includes('讀取完成') || trimmedMsg.includes('Inventory END')) {
+          setIsBusy(false);
+      }
+    });
+  }, [appendLog, decoder, updateSecurityState, showMessage]);
 
-        <!-- 連線狀態與控制 -->
-        <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
-            <h2 class="text-xl font-semibold mb-4 text-gray-700 border-b pb-2">連線與狀態</h2>
-            <div class="flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0">
-                <div id="connectionStatus" class="font-medium px-4 py-2 rounded-full bg-gray-200 text-gray-700">未連線</div>
-                <button id="connectButton" class="w-full sm:w-auto px-6 py-3 bg-primary text-white font-semibold rounded-lg shadow-md hover:bg-blue-600 transition duration-150">
-                    連線到 ESP32
-                </button>
-            </div>
-            <div id="securityStatus" class="mt-4 text-center text-3xl font-bold py-2 rounded-lg bg-gray-200 text-gray-800">
-                DISARMED (解除設防)
-            </div>
-            <div id="alarmMessage" class="hidden mt-4 text-center text-red-700 text-lg font-bold p-3 bg-red-100 rounded-lg animate-pulse">
-                !!! 警報觸發 !!!
-            </div>
+  // --- 核心藍牙操作：連線/斷開 ---
+
+  const connect = useCallback(async () => {
+    setErrorMessage(null);
+    setConnectionStatus('掃描裝置中...');
+
+    if (!navigator.bluetooth) {
+      setErrorMessage('錯誤：您的裝置不支持 Web Bluetooth API，請使用 Android 系統上的 Chrome 或 Edge 瀏覽器。');
+      return;
+    }
+
+    try {
+      // 1. 請求裝置 (過濾器)
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: 'ESP32' }], // 過濾名稱
+        optionalServices: [BLE_UART_SERVICE_UUID]
+      });
+
+      deviceRef.current = device;
+      device.addEventListener('gattserverdisconnected', handleDisconnect);
+      setConnectionStatus(`嘗試連線至 ${device.name}...`);
+
+      // 2. 連線 GATT 伺服器
+      const server = await device.gatt.connect();
+
+      // 3. 取得主要服務
+      const service = await server.getPrimaryService(BLE_UART_SERVICE_UUID);
+
+      // 4. 取得特性
+      const rxCharacteristic = await service.getCharacteristic(BLE_RX_CHARACTERISTIC_UUID); // 寫入特性 (App -> ESP32)
+      const txCharacteristic = await service.getCharacteristic(BLE_TX_CHARACTERISTIC_UUID); // 通知特性 (ESP32 -> App)
+
+      rxCharacteristicRef.current = rxCharacteristic;
+      txCharacteristicRef.current = txCharacteristic;
+
+      // 5. 啟動通知 (Notify)
+      await txCharacteristic.startNotifications();
+      txCharacteristic.addEventListener('characteristicvaluechanged', handleCharacteristicValueChanged);
+
+      // 6. 連線成功
+      setIsConnected(true);
+      setConnectionStatus(`✅ 已連線到 ${device.name}`);
+      appendLog(`LOG: 藍牙連線成功！裝置名稱: ${device.name}`);
+
+    } catch (error) {
+      const msg = error.message.includes("cancelled") ? "連線操作已取消" : `連線失敗: ${error.message}. 請確認藍牙已開啟。`;
+      setErrorMessage(msg);
+      setConnectionStatus('連線失敗');
+      handleDisconnect(); // 清理狀態
+    }
+  }, [handleDisconnect, handleCharacteristicValueChanged, appendLog]);
+
+  const disconnect = useCallback(() => {
+    if (deviceRef.current && deviceRef.current.gatt.connected) {
+      deviceRef.current.gatt.disconnect();
+    } else {
+      handleDisconnect();
+    }
+  }, [handleDisconnect]);
+
+  const handleConnect = useCallback(() => {
+    if (isConnected) {
+      disconnect();
+    } else {
+      connect();
+    }
+  }, [isConnected, connect, disconnect]);
+
+  // 核心指令發送函式
+  const sendCommand = async (command) => {
+    if (!rxCharacteristicRef.current || isSending || isBusy) {
+      setErrorMessage('裝置未連線或正在忙碌中。');
+      return;
+    }
+
+    // 對於會產生大量回覆的指令，設定忙碌狀態
+    if (command === 'READ_LOG' || command === 'INVENTORY') {
+      setIsBusy(true);
+      appendLog(`TX: ${command} (啟動數據讀取...)`);
+      showMessage('正在讀取資料，請稍候...');
+    } else {
+      appendLog(`TX: ${command}`);
+    }
+
+    try {
+      setIsSending(true);
+      const data = new TextEncoder().encode(command + APP_TERMINATOR);
+      await rxCharacteristicRef.current.writeValue(data);
+    } catch (error) {
+      setErrorMessage(`發送指令失敗: ${error.message}`);
+      // 如果發送失敗，且處於忙碌狀態，則解除忙碌
+      if (isBusy) setIsBusy(false); 
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  // 渲染按鈕的樣式函式
+  const getButtonClasses = (variant) => {
+    const base = "w-full py-4 text-white font-bold rounded-xl shadow-lg transition duration-200 transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:shadow-none";
+    switch (variant) {
+      case 'arm':
+        return securityState === SecurityState.ARMED ? 'bg-gray-400' : 'bg-red-600 hover:bg-red-700';
+      case 'disarm':
+        return securityState === SecurityState.DISARMED ? 'bg-gray-400' : 'bg-green-600 hover:bg-green-700';
+      case 'alarm_status':
+        return securityState === SecurityState.ALARM_TRIGGERED ? 'bg-orange-600 hover:bg-orange-700' : 'bg-gray-500 hover:bg-gray-600';
+      case 'control':
+        return 'bg-blue-600 hover:bg-blue-700';
+      case 'data':
+        return 'bg-purple-600 hover:bg-purple-700';
+      case 'connect':
+        return isConnected ? 'bg-red-500 hover:bg-red-600' : 'bg-indigo-600 hover:bg-indigo-700';
+      case 'light':
+        return isLightOn ? 'bg-yellow-500 hover:bg-yellow-600 text-gray-800' : 'bg-gray-500 hover:bg-gray-600';
+      case 'buzzer':
+        return isBuzzerOn ? 'bg-red-500 hover:bg-red-600' : 'bg-gray-500 hover:bg-gray-600';
+      default:
+        return 'bg-gray-500 hover:bg-gray-600';
+    }
+  };
+  
+  const StatusPill = ({ state }) => {
+      let colorClass = 'bg-yellow-500';
+      if (state === SecurityState.ARMED) colorClass = 'bg-red-600';
+      if (state === SecurityState.DISARMED) colorClass = 'bg-green-600';
+      if (state === SecurityState.ALARM_TRIGGERED) colorClass = 'bg-orange-600 animate-pulse';
+
+      return (
+          <div className={`px-4 py-2 rounded-full text-white text-sm font-semibold shadow-md ${colorClass}`}>
+              {state}
+          </div>
+      );
+  };
+
+  // 處理手動控制按鈕的點擊
+  const handleLightToggle = () => sendCommand('TOGGLE_LIGHT');
+  const handleBuzzerToggle = () => sendCommand('TOGGLE_ALARM_OUTPUT');
+
+  return (
+    <div className="min-h-screen bg-gray-100 p-4 font-inter">
+      {/* 頂部狀態列 */}
+      <header className="flex flex-col items-center justify-center p-4 bg-white rounded-2xl shadow-xl mb-4">
+        <h1 className="text-2xl font-extrabold text-gray-800 mb-2">行動安全系統控制器</h1>
+        <StatusPill state={securityState} />
+        <p className={`text-sm mt-2 font-medium ${isConnected ? 'text-green-600' : 'text-gray-500'}`}>
+          連線狀態: {connectionStatus}
+        </p>
+      </header>
+
+      {/* 錯誤訊息區域 */}
+      {errorMessage && (
+        <div className="p-3 mb-4 text-sm text-white bg-red-500 rounded-lg shadow-md" role="alert">
+          {errorMessage}
         </div>
+      )}
 
-        <!-- 主要控制區塊 -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-            
-            <!-- 設防/解除控制 -->
-            <div class="bg-white p-6 rounded-xl shadow-lg">
-                <h2 class="text-xl font-semibold mb-4 text-gray-700 border-b pb-2">安全模式控制</h2>
-                <div class="flex space-x-4">
-                    <button id="armButton" class="flex-1 px-4 py-3 bg-success text-white font-semibold rounded-lg shadow-md hover:bg-emerald-600 transition duration-150 disabled:opacity-50">
-                        設防 (ARM)
-                    </button>
-                    <button id="disarmButton" class="flex-1 px-4 py-3 bg-danger text-white font-semibold rounded-lg shadow-md hover:bg-red-600 transition duration-150 disabled:opacity-50">
-                        解除設防 (DISARM)
-                    </button>
-                </div>
-                <button id="stopAlarmButton" class="mt-4 w-full px-4 py-3 bg-yellow-600 text-white font-semibold rounded-lg shadow-md hover:bg-yellow-700 transition duration-150 disabled:opacity-50">
-                    停止警報 / 重置
-                </button>
-            </div>
+      {/* 連線按鈕 */}
+      <div className="mb-6">
+        <button
+          onClick={handleConnect}
+          className={getButtonClasses('connect')}
+          disabled={isSending || isBusy}
+        >
+          {isConnected ? '斷開連線' : '連線藍牙 (ESP32_Security_Module)'}
+        </button>
+      </div>
 
-            <!-- I/O 與電鎖控制 (核心修正區塊) -->
-            <div class="bg-white p-6 rounded-xl shadow-lg">
-                <h2 class="text-xl font-semibold mb-4 text-gray-700 border-b pb-2">門鎖與照明控制</h2>
-                <div class="space-y-4">
-                    <!-- 門鎖控制: 瞬時開鎖 (5秒脈衝) -->
-                    <button id="unlockButton" class="w-full px-4 py-3 bg-primary text-white font-semibold rounded-lg shadow-md hover:bg-blue-600 transition duration-150 disabled:bg-gray-400">
-                        開門 5 秒 (UNLOCK)
-                    </button>
-                    
-                    <!-- 移除「關鎖」按鈕，由韌體自動控制 -->
-                    
-                    <button id="toggleLightButton" class="w-full px-4 py-3 bg-warning text-gray-800 font-semibold rounded-lg shadow-md hover:bg-amber-500 transition duration-150 disabled:opacity-50">
-                        切換照明 (D4)
-                    </button>
-                </div>
-            </div>
-            
-            <!-- 紀錄/RFID 讀取 -->
-            <div class="bg-white p-6 rounded-xl shadow-lg md:col-span-2">
-                <h2 class="text-xl font-semibold mb-4 text-gray-700 border-b pb-2">紀錄與 RFID 存取</h2>
-                <div class="flex space-x-4">
-                    <button id="readLogButton" class="flex-1 px-4 py-3 bg-gray-600 text-white font-semibold rounded-lg shadow-md hover:bg-gray-700 transition duration-150 disabled:opacity-50">
-                        讀取登錄紀錄
-                    </button>
-                    <button id="readInventoryButton" class="flex-1 px-4 py-3 bg-gray-600 text-white font-semibold rounded-lg shadow-md hover:bg-gray-700 transition duration-150 disabled:opacity-50">
-                        盤查 RFID 卡片
-                    </button>
-                </div>
-            </div>
+      {/* 設防/解除面板 */}
+      <h2 className="text-lg font-semibold text-gray-700 mb-3 border-b pb-1">系統設防狀態</h2>
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        {/* 設防/解除按鈕 */}
+        <button
+          onClick={() => sendCommand('ARM')}
+          className={getButtonClasses('arm')}
+          disabled={!isConnected || securityState === SecurityState.ARMED || isSending || isBusy}
+        >
+          設防 (ARM)
+        </button>
+        <button
+          onClick={() => sendCommand('DISARM')}
+          className={getButtonClasses('disarm')}
+          disabled={!isConnected || securityState === SecurityState.DISARMED || isSending || isBusy}
+        >
+          解除設防 (DISARM)
+        </button>
+        {/* 緊急警報停止 */}
+        <button
+          onClick={() => sendCommand('STOP_ALARM')}
+          className={getButtonClasses('alarm_status')}
+          disabled={!isConnected || securityState !== SecurityState.ALARM_TRIGGERED || isSending || isBusy}
+        >
+          停止警報 (Stop)
+        </button>
+      </div>
+      
+      {/* 門鎖與照明控制 */}
+      <h2 className="text-lg font-semibold text-gray-700 mb-3 border-b pb-1">裝置手動控制</h2>
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        {/* 門鎖按鈕 */}
+        <button
+          onClick={() => sendCommand('LOCK')}
+          className={getButtonClasses('control')}
+          disabled={!isConnected || isSending || isBusy}
+        >
+          上鎖 (Lock)
+        </button>
+        <button
+          onClick={() => sendCommand('UNLOCK')}
+          className={getButtonClasses('control')}
+          disabled={!isConnected || isSending || isBusy}
+        >
+          開鎖 (Unlock)
+        </button>
 
+        {/* 照明切換 (D4) */}
+        <button
+          onClick={handleLightToggle}
+          className={getButtonClasses('light')}
+          disabled={!isConnected || isSending || isBusy}
+        >
+          開燈 ({isLightOn ? 'ON' : 'OFF'})
+        </button>
+        
+        {/* 警報輸出切換 (D5) */}
+        <button
+          onClick={handleBuzzerToggle}
+          className={`${getButtonClasses('buzzer')} col-span-3`}
+          disabled={!isConnected || isSending || isBusy}
+        >
+          手動警報 ({isBuzzerOn ? 'ON' : 'OFF'})
+        </button>
+      </div>
+
+      {/* 資料操作 */}
+      <h2 className="text-lg font-semibold text-gray-700 mb-3 border-b pb-1">資料/感應器操作</h2>
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        <button
+          onClick={() => sendCommand('READ_LOG')}
+          className={getButtonClasses('data')}
+          disabled={!isConnected || isSending || isBusy}
+        >
+          讀取紀錄
+        </button>
+        <button
+          onClick={() => sendCommand('INVENTORY')}
+          className={getButtonClasses('data')}
+          disabled={!isConnected || isSending || isBusy}
+        >
+          盤查卡片
+        </button>
+      </div>
+      
+      {/* 系統日誌 */}
+      <h2 className="text-lg font-semibold text-gray-700 mb-3 border-b pb-1">系統日誌</h2>
+      <div className="bg-white p-3 rounded-xl shadow-inner h-64 overflow-y-scroll text-xs text-gray-700 space-y-1">
+        {appLog.length === 0 ? (
+          <p className="text-center text-gray-400 mt-10">等待藍牙訊息...</p>
+        ) : (
+          appLog.map((entry) => (
+            <div key={entry.id} className="border-b border-gray-100 pb-1 last:border-b-0">
+              <span className="font-mono text-[10px] text-gray-400 mr-2">
+                [{new Date(entry.timestamp).toLocaleTimeString()}]
+              </span>
+              <span className={`${entry.message.startsWith('TX:') ? 'font-medium text-blue-600' : 
+                                entry.message.startsWith('ALERT:') ? 'text-red-600 font-bold' : 
+                                entry.message.startsWith('LOG:') ? 'text-green-600' : 
+                                'text-gray-700'}`}>
+                {entry.message}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* Loading Indicator */}
+      {(isSending || isBusy) && (
+        <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
+          <div className="text-white text-lg font-bold p-4 bg-gray-800 rounded-lg shadow-2xl">
+            {isBusy ? '數據處理中...' : '發送中...'}
+          </div>
         </div>
+      )}
 
-        <!-- 系統日誌顯示區 -->
-        <div class="bg-white p-6 rounded-xl shadow-lg">
-            <h2 class="text-xl font-semibold mb-4 text-gray-700 border-b pb-2">系統日誌</h2>
-            <div id="log" class="log-container bg-gray-50 p-3 rounded-lg text-sm text-gray-600 space-y-1">
-                <!-- 日誌訊息將顯示在此處 -->
-            </div>
+      {/* Custom Modal for Alerts */}
+      {isModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl p-6 shadow-2xl max-w-sm w-full transform transition-all scale-100">
+            <h3 className="text-xl font-bold mb-3 text-red-600">系統通知</h3>
+            <p className="text-gray-700 mb-4">{modalMessage}</p>
+            <button
+              onClick={() => setIsModalOpen(false)}
+              className="w-full py-2 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700"
+            >
+              確定
+            </button>
+          </div>
         </div>
-
+      )}
     </div>
+  );
+};
 
-    <script>
-        // --- 全局變數 ---
-        let device, server, service, rxCharacteristic, txCharacteristic;
-        const BLE_UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-        const BLE_RX_CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // 用於 Write (發送命令給 ESP32)
-        const BLE_TX_CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // 用於 Notify (接收狀態)
-        
-        let unlockTimer = null; // 用於門鎖倒數計時器
-        const UNLOCK_DURATION = 5; // 倒數 5 秒
-
-        // --- DOM 元素快取 ---
-        const connectButton = document.getElementById('connectButton');
-        const connectionStatus = document.getElementById('connectionStatus');
-        const securityStatusDiv = document.getElementById('securityStatus');
-        const alarmMessageDiv = document.getElementById('alarmMessage');
-        const logContainer = document.getElementById('log');
-        const unlockButton = document.getElementById('unlockButton');
-        const stopAlarmButton = document.getElementById('stopAlarmButton');
-        const armButton = document.getElementById('armButton');
-        const disarmButton = document.getElementById('disarmButton');
-        const toggleLightButton = document.getElementById('toggleLightButton');
-        const readLogButton = document.getElementById('readLogButton');
-        const readInventoryButton = document.getElementById('readInventoryButton');
-
-
-        // --- 輔助函式 ---
-
-        /**
-         * 將訊息新增到日誌視窗
-         * @param {string} message - 要顯示的訊息
-         * @param {string} level - 訊息級別 (e.g., 'INFO', 'ERROR')
-         */
-        function logMessage(message, level = 'INFO') {
-            const now = new Date();
-            const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
-            const newLogEntry = document.createElement('p');
-            newLogEntry.innerHTML = `<span class="font-mono text-xs text-gray-400">[${timeStr}]</span> <span class="font-semibold text-xs">${level}:</span> ${message}`;
-            
-            // 根據級別設定顏色
-            if (level === 'ERROR') {
-                newLogEntry.classList.add('text-danger');
-            } else if (level === 'WARNING') {
-                newLogEntry.classList.add('text-warning');
-            }
-
-            logContainer.appendChild(newLogEntry);
-            // 滾動到底部
-            logContainer.scrollTop = logContainer.scrollHeight;
-        }
-
-        /**
-         * 發送命令到 ESP32
-         * @param {string} command - 要發送的命令字串
-         */
-        async function sendCommand(command) {
-            if (!rxCharacteristic) {
-                logMessage('藍牙尚未連線或特性不可用', 'ERROR');
-                return;
-            }
-            try {
-                // 將命令字串轉換為 Uint8Array
-                const encoder = new TextEncoder();
-                const data = encoder.encode(command);
-                await rxCharacteristic.writeValue(data);
-                logMessage(`TX: ${command}`, 'INFO');
-            } catch (error) {
-                logMessage(`發送命令失敗: ${error.message}`, 'ERROR');
-            }
-        }
-
-        // --- 藍牙核心功能 ---
-
-        async function connectBLE() {
-            logMessage('嘗試連線...');
-            try {
-                device = await navigator.bluetooth.requestDevice({
-                    filters: [{ namePrefix: 'ESP32' }], // 依名稱前綴過濾
-                    optionalServices: [BLE_UART_SERVICE_UUID]
-                });
-
-                connectionStatus.textContent = '連線中...';
-                connectionStatus.classList.remove('bg-gray-200', 'bg-danger');
-                connectionStatus.classList.add('bg-warning', 'text-gray-900');
-
-                // 註冊斷開事件
-                device.addEventListener('gattserverdisconnected', onDisconnected);
-
-                const gattServer = await device.gatt.connect();
-                server = gattServer;
-
-                service = await server.getPrimaryService(BLE_UART_SERVICE_UUID);
-                rxCharacteristic = await service.getCharacteristic(BLE_RX_CHARACTERISTIC_UUID); // Write (TX from HMI)
-                txCharacteristic = await service.getCharacteristic(BLE_TX_CHARACTERISTIC_UUID); // Notify (RX to HMI)
-
-                // 啟用通知
-                await txCharacteristic.startNotifications();
-                txCharacteristic.addEventListener('characteristicvaluechanged', handleNotifications);
-
-                connectionStatus.textContent = `已連線: ${device.name}`;
-                connectionStatus.classList.remove('bg-warning');
-                connectionStatus.classList.add('bg-success', 'text-white');
-                logMessage('藍牙連線成功，已啟用通知。', 'SUCCESS');
-                connectButton.textContent = '斷開連線';
-
-                // 啟用所有控制按鈕
-                [armButton, disarmButton, toggleLightButton, readLogButton, readInventoryButton].forEach(btn => btn.disabled = false);
-
-            } catch (error) {
-                logMessage(`連線失敗: ${error.message}`, 'ERROR');
-                connectionStatus.textContent = '連線失敗';
-                connectionStatus.classList.remove('bg-warning');
-                connectionStatus.classList.add('bg-danger', 'text-white');
-                connectButton.textContent = '重新連線';
-            }
-        }
-
-        function onDisconnected(event) {
-            const device = event.target;
-            logMessage(`裝置 "${device.name}" 已斷開連線`, 'ERROR');
-            connectionStatus.textContent = '已斷開連線';
-            connectionStatus.classList.remove('bg-success');
-            connectionStatus.classList.add('bg-danger', 'text-white');
-            connectButton.textContent = '連線到 ESP32';
-            // 禁用所有控制按鈕
-            [armButton, disarmButton, unlockButton, stopAlarmButton, toggleLightButton, readLogButton, readInventoryButton].forEach(btn => btn.disabled = true);
-            // 停止可能的門鎖計時器
-            stopUnlockCountdown();
-        }
-
-        /**
-         * 處理來自 ESP32 的通知 (Notification)
-         */
-        function handleNotifications(event) {
-            const value = event.target.value;
-            const decoder = new TextDecoder('utf-8');
-            const receivedText = decoder.decode(value);
-            
-            // 1. 處理狀態更新 (STATUS:)
-            if (receivedText.startsWith('STATUS:')) {
-                const status = receivedText.substring(7).trim();
-                securityStatusDiv.textContent = status;
-                
-                // 根據狀態設定顏色
-                securityStatusDiv.classList.remove('bg-success', 'bg-danger', 'bg-gray-200');
-                alarmMessageDiv.classList.add('hidden');
-                stopAlarmButton.disabled = false;
-
-                if (status === 'ARMED') {
-                    securityStatusDiv.classList.add('bg-success', 'text-white');
-                } else if (status === 'DISARMED') {
-                    securityStatusDiv.classList.add('bg-gray-200', 'text-gray-800');
-                } else if (status === 'ALARM_TRIGGERED') {
-                    securityStatusDiv.classList.add('bg-danger', 'text-white');
-                    alarmMessageDiv.classList.remove('hidden');
-                }
-                logMessage(`系統狀態更新為: ${status}`, 'WARNING');
-
-            // 2. 處理一般日誌 (LOG:)
-            } else if (receivedText.startsWith('LOG:')) {
-                const message = receivedText.substring(4);
-                logMessage(message.trim());
-            
-            // 3. 處理日誌/RFID 資料 (LOG_DATA:)
-            } else if (receivedText.startsWith('LOG_DATA:')) {
-                const data = receivedText.substring(9).trim();
-                logMessage(`[紀錄資料] ${data}`, 'INFO');
-
-            // 4. 處理 I/O IN 資料 (LP_DATA:) - 顯示 LP-2010 原始 IN 狀態
-            } else if (receivedText.startsWith('LP_DATA:')) {
-                const data = receivedText.substring(8).trim();
-                // 可以在這裡顯示 I/O IN 原始十六進制數據
-                // logMessage(`[I/O IN] ${data}H`);
-            }
-        }
-
-        // --- 門鎖脈衝邏輯 (核心修正) ---
-        
-        /**
-         * 啟動門鎖倒數計時器
-         */
-        function startUnlockCountdown() {
-            let secondsLeft = UNLOCK_DURATION;
-            // 立即發送 UNLOCK 命令給 ESP32 (D7=1)
-            sendCommand('UNLOCK'); 
-
-            unlockButton.disabled = true;
-            stopAlarmButton.disabled = true; // 解鎖時無法停止警報
-            
-            // 倒數計時
-            unlockTimer = setInterval(() => {
-                secondsLeft--;
-                if (secondsLeft >= 0) {
-                    unlockButton.textContent = `解鎖中... ${secondsLeft} 秒後自動上鎖`;
-                    unlockButton.classList.add('bg-gray-400');
-                    unlockButton.classList.remove('bg-primary', 'hover:bg-blue-600');
-                } else {
-                    stopUnlockCountdown();
-                }
-            }, 1000);
-        }
-
-        /**
-         * 停止門鎖倒數計時器並重置按鈕狀態
-         */
-        function stopUnlockCountdown() {
-            if (unlockTimer) {
-                clearInterval(unlockTimer);
-                unlockTimer = null;
-            }
-            unlockButton.textContent = '開門 5 秒 (UNLOCK)';
-            unlockButton.disabled = false;
-            stopAlarmButton.disabled = false;
-            unlockButton.classList.remove('bg-gray-400');
-            unlockButton.classList.add('bg-primary', 'hover:bg-blue-600');
-        }
-
-        // --- 事件監聽器設定 ---
-        connectButton.addEventListener('click', async () => {
-            if (server && server.connected) {
-                try {
-                    await server.disconnect();
-                    onDisconnected({ target: device }); // 手動觸發斷線邏輯
-                } catch (e) {
-                    logMessage(`斷開連線失敗: ${e.message}`, 'ERROR');
-                }
-            } else {
-                connectBLE();
-            }
-        });
-
-        // 控制按鈕的監聽器
-        armButton.addEventListener('click', () => sendCommand('ARM'));
-        disarmButton.addEventListener('click', () => sendCommand('DISARM'));
-        stopAlarmButton.addEventListener('click', () => sendCommand('STOP_ALARM'));
-        toggleLightButton.addEventListener('click', () => sendCommand('TOGGLE_LIGHT'));
-        readLogButton.addEventListener('click', () => sendCommand('READ_LOG'));
-        readInventoryButton.addEventListener('click', () => sendCommand('INVENTORY'));
-
-        // 門鎖按鈕使用新的脈衝邏輯
-        unlockButton.addEventListener('click', startUnlockCountdown); 
-        // 移除對 'LOCK' 按鈕的監聽器
-
-        // 初始化：禁用控制按鈕直到連線成功
-        document.addEventListener('DOMContentLoaded', () => {
-            [armButton, disarmButton, unlockButton, stopAlarmButton, toggleLightButton, readLogButton, readInventoryButton].forEach(btn => btn.disabled = true);
-            logMessage('介面準備就緒。請點擊連線按鈕。');
-        });
-
-    </script>
-</body>
-</html>
-
-
+export default App;
 
 
 
