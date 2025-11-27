@@ -9,235 +9,220 @@
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; background-color: #f0f4f8; }
         .log-area { height: 300px; overflow-y: scroll; scroll-behavior: smooth; font-family: 'Courier New', monospace; }
-        .control-btn { @apply p-4 rounded-xl shadow-lg transition duration-200 transform hover:scale-[1.02] active:scale-[0.98] focus:outline-none; }
+        .control-btn { @apply p-4 rounded-xl shadow-lg transition duration-200 transform hover:scale-[1.02] active:scale-[0.98] focus:outline-none text-lg font-bold; }
         .control-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-        .toggle-active { @apply bg-blue-600 text-white; }
-        .toggle-inactive { @apply bg-gray-200 text-gray-700; }
     </style>
 </head>
 <body class="p-4 sm:p-8">
     <div id="app" class="max-w-4xl mx-auto bg-white shadow-2xl rounded-2xl p-6 md:p-10 border-t-4 border-blue-600">
         <header class="mb-8 text-center sm:text-left">
             <h1 class="text-3xl font-bold text-gray-800">行動安全系統藍牙控制器</h1>
-            <p class="text-sm text-gray-500 mt-1">透過 Web Bluetooth 與 ESP32 進行通訊。</p>
+            <p class="text-sm text-gray-500 mt-1">Web Bluetooth HMI (No Voice)</p>
         </header>
 
-        <!-- 連線/狀態面板 -->
+        <!-- 連線狀態 -->
         <section class="mb-8 p-5 bg-gray-100 rounded-xl flex flex-col sm:flex-row justify-between items-center gap-4 shadow-inner">
             <div class="flex items-center gap-3">
-                <div id="status-icon" class="p-2 rounded-full bg-gray-400 text-white">
-                    <!-- Icon Placeholder -->
-                    <div class="w-6 h-6">⚡</div>
-                </div>
+                <!-- Status Icon: Green/Red/Yellow based on isConnected and isArmed -->
+                <div class="p-2 rounded-full bg-gray-400 text-white" id="status-icon">⚡</div>
                 <div>
                     <p class="text-sm text-gray-500">連線狀態</p>
                     <p id="status-display" class="text-xl font-bold text-gray-800">未連線</p>
                 </div>
             </div>
-            <button id="connect-button" class="w-full sm:w-auto py-2 px-6 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition duration-300">
-                啟動連線
-            </button>
+            <button id="connect-button" class="w-full sm:w-auto py-2 px-6 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition">啟動連線</button>
         </section>
 
-        <!-- 控制命令區塊 -->
+        <!-- 控制命令 -->
         <section class="grid grid-cols-2 gap-4 mb-8">
             <!-- 設防/解除 -->
-            <button id="btn-arm" class="control-btn bg-yellow-500 text-white hover:bg-yellow-600">
-                設防 (ARM)
-            </button>
-            <button id="btn-disarm" disabled class="control-btn bg-gray-300 text-gray-800 hover:bg-gray-400">
-                解除設防 (DISARM)
-            </button>
+            <button id="btn-arm" data-cmd="ARM" disabled class="control-btn bg-yellow-500 text-white">設防 (ARM)</button>
+            <button id="btn-disarm" data-cmd="DISARM" disabled class="control-btn bg-gray-300 text-gray-600">解除 (DISARM)</button>
 
-            <!-- 門鎖/燈光/警報 -->
-            <button id="btn-door" class="control-btn bg-teal-500 text-white hover:bg-teal-600 disabled:bg-gray-300" disabled>
-                開門 (DOOR)
-            </button>
-            <button id="btn-light" class="control-btn bg-indigo-500 text-white hover:bg-indigo-600 disabled:bg-gray-300" disabled>
-                開/關燈 (LIGHT)
-            </button>
-            <button id="btn-alarm" class="control-btn bg-red-500 text-white hover:bg-red-600 col-span-2 disabled:bg-gray-300" disabled>
-                開啟/解除警報 (ALARM)
-            </button>
-             <button id="btn-read-log" class="control-btn bg-purple-600 text-white hover:bg-purple-700 col-span-2 disabled:bg-gray-300" disabled>
-                讀取人員進出登錄紀錄
-            </button>
+            <!-- 裝置控制 -->
+            <button id="btn-door" data-cmd="DOOR_OPEN" disabled class="control-btn bg-teal-500 text-white">開門</button>
+            <button id="btn-light" data-cmd="LIGHT_TOGGLE" disabled class="control-btn bg-indigo-500 text-white">開/關燈</button>
+            <button id="btn-alarm" data-cmd="ALARM_TOGGLE" disabled class="control-btn bg-red-500 text-white col-span-2">開/關警報</button>
+            <button id="btn-log" data-cmd="READ_LOG" disabled class="control-btn bg-purple-600 text-white hover:bg-purple-700 col-span-2">讀取人員進出登錄紀錄</button>
         </section>
 
-        <!-- 訊息日誌區塊 -->
+        <!-- 日誌 -->
         <section class="p-5 bg-gray-800 rounded-xl shadow-xl">
-            <h2 class="text-xl font-semibold text-white mb-3">系統訊息日誌</h2>
-            <div id="log-container" class="log-area p-3 bg-gray-900 text-green-400 rounded-lg text-sm">
-                <p>--- 應用程式已啟動 ---</p>
-            </div>
-            <button id="clear-log-button" class="mt-3 py-1 px-4 text-xs bg-gray-600 text-white rounded hover:bg-gray-700 transition">
-                清除日誌
-            </button>
+            <h2 class="text-xl font-semibold text-white mb-3">系統日誌 & 紀錄</h2>
+            <div id="log-container" class="log-area p-3 bg-gray-900 text-green-400 rounded-lg text-sm"><p>--- 等待連線 ---</p></div>
+            <button id="clear-log" class="mt-3 py-1 px-4 text-xs bg-gray-600 text-white rounded">清除日誌</button>
         </section>
     </div>
 
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        
-        // Dummy Firebase init for environment compatibility
-        try {
-            const app = initializeApp(typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {});
-            signInAnonymously(getAuth(app));
-        } catch(e) { console.log("Firebase init skipped"); }
-
-        // BLE 設定
         const BLE_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-        const BLE_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Notify
-        const BLE_RX_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Write
-        const TERMINATOR = '\n';
+        const BLE_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; 
+        const BLE_RX_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; 
+        const TERMINATOR = '\n'; // ESP32 expects newline
 
-        let bleDevice, rxChar, txChar;
-        let isConnected = false;
-        let isArmed = false;
-        let isLightOn = false;
-        let isAlarmOn = false;
+        let bleDevice, rxChar, txChar, isConnected = false;
+        let isArmed = false, isLightOn = false, isAlarmOn = false;
 
-        // UI 元素
         const statusDisplay = document.getElementById('status-display');
+        const statusIcon = document.getElementById('status-icon');
         const connectBtn = document.getElementById('connect-button');
+        const logContainer = document.getElementById('log-container');
+        
+        // UI Elements
         const btnArm = document.getElementById('btn-arm');
         const btnDisarm = document.getElementById('btn-disarm');
         const btnDoor = document.getElementById('btn-door');
         const btnLight = document.getElementById('btn-light');
         const btnAlarm = document.getElementById('btn-alarm');
-        const btnReadLog = document.getElementById('btn-read-log');
-        const logContainer = document.getElementById('log-container');
+        const btnLog = document.getElementById('btn-log');
 
         function log(msg, type="info") {
             const p = document.createElement('p');
             p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
             if (type === 'rx') p.className = "text-yellow-300";
-            if (type === 'tx') p.className = "text-blue-300";
+            if (type === 'data') p.className = "text-cyan-300 font-bold";
+            if (type === 'error') p.className = "text-red-500 font-bold";
             logContainer.appendChild(p);
             logContainer.scrollTop = logContainer.scrollHeight;
         }
 
-        // 更新 UI 狀態
         function updateUI() {
             connectBtn.textContent = isConnected ? "斷開連線" : "啟動連線";
-            statusDisplay.textContent = isConnected ? "已連線" : "未連線";
-            statusDisplay.className = isConnected ? "text-xl font-bold text-green-600" : "text-xl font-bold text-red-600";
+            statusDisplay.textContent = isConnected ? (isArmed ? "已連線 (設防中)" : "已連線 (解除設防)") : "未連線";
+            statusDisplay.className = isConnected ? (isArmed ? "text-xl font-bold text-yellow-600" : "text-xl font-bold text-green-600") : "text-xl font-bold text-red-600";
+            statusIcon.className = isConnected ? (isArmed ? "p-2 rounded-full bg-yellow-500 text-white" : "p-2 rounded-full bg-green-500 text-white") : "p-2 rounded-full bg-gray-400 text-white";
+
+            [btnDoor, btnLight, btnAlarm, btnLog].forEach(btn => btn.disabled = !isConnected);
             
-            // 啟用/禁用按鈕
-            const controls = [btnDoor, btnLight, btnAlarm, btnReadLog];
-            controls.forEach(btn => btn.disabled = !isConnected);
-            
-            if (isConnected) {
+            if(isConnected) {
                 btnArm.disabled = isArmed;
                 btnDisarm.disabled = !isArmed;
                 
-                if (isArmed) {
+                // Button Styling
+                if(isArmed) {
                     btnArm.className = "control-btn bg-gray-300 text-gray-500";
                     btnDisarm.className = "control-btn bg-green-500 text-white hover:bg-green-600";
                 } else {
                     btnArm.className = "control-btn bg-yellow-500 text-white hover:bg-yellow-600";
-                    btnDisarm.className = "control-btn bg-gray-300 text-gray-500";
+                    btnDisarm.className = "control-btn bg-gray-300 text-gray-600";
                 }
-
-                btnLight.textContent = isLightOn ? "關燈 (LIGHT OFF)" : "開燈 (LIGHT ON)";
-                btnAlarm.textContent = isAlarmOn ? "解除警報 (ALARM OFF)" : "開啟警報 (ALARM ON)";
+                
+                btnLight.textContent = isLightOn ? "關燈 (OFF)" : "開燈 (ON)";
+                btnAlarm.textContent = isAlarmOn ? "解除警報 (OFF)" : "開啟警報 (ON)";
             } else {
-                btnArm.disabled = true;
+                btnArm.disabled = true; 
                 btnDisarm.disabled = true;
+                btnArm.className = "control-btn bg-gray-300 text-gray-500";
+                btnDisarm.className = "control-btn bg-gray-300 text-gray-600";
             }
         }
 
+        // V23 核心解析邏輯：將 LP-2010 回傳的 12-byte HEX 字串轉換為日期時間和卡號
+        function parseLogData(hexStr) {
+            // 移除 ' 字元，並將 HEX 字串轉換為 byte 陣列
+            const bytes = hexStr.replace(/'/g, '').trim().split(' ').map(b => parseInt(b, 16)).filter(b => !isNaN(b));
+            if (bytes.length < 12) return hexStr + " (格式錯誤)"; 
+            
+            // LP-2010 日期時間格式解析 (BCD-like)
+            const b0 = bytes[0], b1 = bytes[1], b2 = bytes[2], b3 = bytes[3];
+            
+            // Year: Byte 0 (bits 7-2) + 2000
+            const year = 2000 + (b0 >> 2);
+            // Month: Byte 0 (bits 1-0) << 2 | Byte 1 (bits 7-6)
+            const month = ((b0 & 0x03) << 2) | (b1 >> 6);
+            // Day: Byte 1 (bits 5-1)
+            const day = (b1 >> 1) & 0x1F;
+            // Hour: Byte 1 (bit 0) << 4 | Byte 2 (bits 7-4)
+            const hour = ((b1 & 0x01) << 4) | (b2 >> 4);
+            // Minute: Byte 2 (bits 3-0) << 2 | Byte 3 (bits 7-6)
+            const minute = ((b2 & 0x0F) << 2) | (b3 >> 6);
+            // Second: Byte 3 (bits 5-0)
+            const second = b3 & 0x3F;
+            
+            const dateStr = `${year}/${month.toString().padStart(2,'0')}/${day.toString().padStart(2,'0')} ${hour.toString().padStart(2,'0')}:${minute.toString().padStart(2,'0')}:${second.toString().padStart(2,'0')}`;
+            
+            // 解析卡號 (Byte 4-11)
+            const cardId = bytes.slice(4, 12).map(b => b.toString(16).toUpperCase().padStart(2,'0')).join(' ');
+            
+            return `[紀錄] 時間: ${dateStr} | 卡號: ${cardId}`;
+        }
+
+        function handleNotifications(event) {
+            const val = new TextDecoder().decode(event.target.value).trim();
+            
+            // 狀態同步
+            if (val.includes("STATUS: ARMED")) { isArmed = true; isAlarmOn = false; updateUI(); }
+            else if (val.includes("STATUS: DISARMED")) { isArmed = false; isAlarmOn = false; updateUI(); }
+            else if (val.includes("STATUS: LIGHT_ON")) { isLightOn = true; updateUI(); }
+            else if (val.includes("STATUS: LIGHT_OFF")) { isLightOn = false; updateUI(); }
+            else if (val.includes("STATUS: ALARM_ON")) { isAlarmOn = true; updateUI(); }
+            else if (val.includes("STATUS: ALARM_OFF")) { isAlarmOn = false; updateUI(); }
+            else if (val.includes("ALARM_TRIGGERED:")) { 
+                isArmed = true; isAlarmOn = true; updateUI(); // 警報觸發強制設防
+                log(val, 'error');
+            }
+            
+            // 日誌數據處理
+            else if (val.startsWith("LOG_DATA:")) {
+                const rawData = val.substring(9).trim();
+                // 檢查是否包含單引號，這通常是 LP-2010 HEX 紀錄的標記
+                if (rawData.includes("'")) { 
+                     log(parseLogData(rawData), 'data');
+                } else {
+                     log(`[日誌原始資料] ${rawData}`, 'data');
+                }
+            } else {
+                log("RX: " + val, 'rx');
+            }
+        }
+
+        async function sendCommand(cmd) {
+            if (!rxChar) return log('錯誤: 藍牙特徵值未初始化', 'error');
+            try {
+                // 處理 Toggle 邏輯
+                let finalCmd = cmd;
+                if (cmd === 'LIGHT_TOGGLE') finalCmd = isLightOn ? 'LIGHT_OFF' : 'LIGHT_ON';
+                if (cmd === 'ALARM_TOGGLE') finalCmd = isAlarmOn ? 'ALARM_OFF' : 'ALARM_ON';
+                
+                await rxChar.writeValue(new TextEncoder().encode(finalCmd + TERMINATOR));
+                log('TX: ' + finalCmd);
+                
+                // 前端暫時更新狀態，等待 ESP32 確認
+                if (finalCmd === 'LIGHT_ON') isLightOn = true;
+                if (finalCmd === 'LIGHT_OFF') isLightOn = false;
+                if (finalCmd === 'ALARM_ON') isAlarmOn = true;
+                if (finalCmd === 'ALARM_OFF') isAlarmOn = false;
+                updateUI();
+
+            } catch(e) { log('發送失敗: ' + e.message, 'error'); }
+        }
+
         async function connect() {
-             if (!navigator.bluetooth) return alert('瀏覽器不支援 Web Bluetooth');
+             if (!navigator.bluetooth) return alert('錯誤: 您的瀏覽器不支援 Web Bluetooth API。請使用 Chrome 瀏覽器。');
              try {
                  log('掃描裝置...');
-                 bleDevice = await navigator.bluetooth.requestDevice({
-                     filters: [{ services: [BLE_SERVICE_UUID] }]
-                 });
-                 bleDevice.addEventListener('gattserverdisconnected', onDisconnect);
+                 bleDevice = await navigator.bluetooth.requestDevice({ filters: [{ services: [BLE_SERVICE_UUID] }] });
+                 bleDevice.addEventListener('gattserverdisconnected', () => { isConnected=false; updateUI(); log("連線已中斷"); });
                  const server = await bleDevice.gatt.connect();
                  const service = await server.getPrimaryService(BLE_SERVICE_UUID);
                  rxChar = await service.getCharacteristic(BLE_RX_UUID);
                  txChar = await service.getCharacteristic(BLE_TX_UUID);
-                 
                  await txChar.startNotifications();
                  txChar.addEventListener('characteristicvaluechanged', handleNotifications);
-                 
-                 isConnected = true;
+                 isConnected = true; isArmed = false; // 預設解除設防
                  updateUI();
-                 log('連線成功！');
-             } catch(e) {
-                 log('連線失敗: ' + e, 'error');
-             }
-        }
-
-        function onDisconnect() {
-            isConnected = false;
-            isArmed = false;
-            updateUI();
-            log('裝置已斷開');
-        }
-
-        async function sendCommand(cmd) {
-            if (!rxChar) return;
-            try {
-                await rxChar.writeValue(new TextEncoder().encode(cmd + TERMINATOR));
-                log('TX: ' + cmd, 'tx');
-                
-                // 本地狀態預測更新 (等待回覆確認)
-                if (cmd === 'ARM') { isArmed = true; updateUI(); }
-                if (cmd === 'DISARM') { isArmed = false; updateUI(); }
-                if (cmd === 'LIGHT_ON') { isLightOn = true; updateUI(); }
-                if (cmd === 'LIGHT_OFF') { isLightOn = false; updateUI(); }
-                if (cmd === 'ALARM_ON') { isAlarmOn = true; updateUI(); }
-                if (cmd === 'ALARM_OFF') { isAlarmOn = false; updateUI(); }
-                
-            } catch(e) {
-                log('發送失敗: ' + e);
-            }
-        }
-        
-        // 處理接收資料
-        function handleNotifications(event) {
-            const val = new TextDecoder().decode(event.target.value).trim();
-            log("RX: " + val, 'rx');
-
-            // 狀態同步
-            if (val.includes("ARMED")) { isArmed = true; updateUI(); }
-            if (val.includes("DISARMED")) { isArmed = false; updateUI(); }
-            if (val.includes("ALARM_TRIGGERED")) {
-                 log("!!! 警報觸發 !!!");
-                 // 可以在這裡加入震動或音效提示
-            }
-            
-            // 日誌解析 (簡單範例)
-            // 假設格式 '26 92 ...' 是 Hex Data
-            if (val.startsWith("'") || val.match(/^[0-9A-F ]+$/)) {
-                 // 这里可以添加详细的 Hex to Date 转换逻辑
-                 log("收到紀錄數據: " + val);
-            }
+                 log('連線成功！請等待系統狀態同步...');
+             } catch(e) { log('連線失敗: ' + e.message, 'error'); }
         }
 
         connectBtn.addEventListener('click', () => isConnected ? bleDevice.gatt.disconnect() : connect());
-        
         btnArm.addEventListener('click', () => sendCommand('ARM'));
         btnDisarm.addEventListener('click', () => sendCommand('DISARM'));
         btnDoor.addEventListener('click', () => sendCommand('DOOR_OPEN'));
-        
-        btnLight.addEventListener('click', () => {
-            sendCommand(isLightOn ? 'LIGHT_OFF' : 'LIGHT_ON');
-        });
-        
-        btnAlarm.addEventListener('click', () => {
-            sendCommand(isAlarmOn ? 'ALARM_OFF' : 'ALARM_ON');
-        });
-        
-        document.getElementById('btn-read-log').addEventListener('click', () => sendCommand('READ_LOG'));
-        
-        document.getElementById('clear-log-button').addEventListener('click', () => {
-             logContainer.innerHTML = '<p>--- 日誌已清除 ---</p>';
-        });
+        btnLight.addEventListener('click', () => sendCommand('LIGHT_TOGGLE'));
+        btnAlarm.addEventListener('click', () => sendCommand('ALARM_TOGGLE'));
+        btnLog.addEventListener('click', () => sendCommand('READ_LOG'));
+        document.getElementById('clear-log').addEventListener('click', () => logContainer.innerHTML = '<p>--- 日誌已清除 ---</p>');
         
         updateUI();
     </script>
