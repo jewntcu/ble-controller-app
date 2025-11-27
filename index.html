@@ -17,7 +17,7 @@
     <div id="app" class="max-w-4xl mx-auto bg-white shadow-2xl rounded-2xl p-6 md:p-10 border-t-4 border-blue-600">
         <header class="mb-8 text-center sm:text-left">
             <h1 class="text-3xl font-bold text-gray-800">行動安全系統藍牙控制器</h1>
-            <p class="text-sm text-gray-500 mt-1">Web Bluetooth HMI (No Voice)</p>
+            <p class="text-sm text-gray-500 mt-1">Web Bluetooth HMI (No Voice, V23 Compatible)</p>
         </header>
 
         <!-- 連線狀態 -->
@@ -150,7 +150,7 @@
         function handleNotifications(event) {
             const val = new TextDecoder().decode(event.target.value).trim();
             
-            // 狀態同步
+            // V23 狀態同步與警報回饋處理
             if (val.includes("STATUS: ARMED")) { isArmed = true; isAlarmOn = false; updateUI(); }
             else if (val.includes("STATUS: DISARMED")) { isArmed = false; isAlarmOn = false; updateUI(); }
             else if (val.includes("STATUS: LIGHT_ON")) { isLightOn = true; updateUI(); }
@@ -158,7 +158,10 @@
             else if (val.includes("STATUS: ALARM_ON")) { isAlarmOn = true; updateUI(); }
             else if (val.includes("STATUS: ALARM_OFF")) { isAlarmOn = false; updateUI(); }
             else if (val.includes("ALARM_TRIGGERED:")) { 
-                isArmed = true; isAlarmOn = true; updateUI(); // 警報觸發強制設防
+                // 收到警報觸發的回饋 (V23 格式)，強制更新設防和警報狀態
+                isArmed = true; 
+                isAlarmOn = true; 
+                updateUI(); 
                 log(val, 'error');
             }
             
@@ -212,6 +215,8 @@
                  isConnected = true; isArmed = false; // 預設解除設防
                  updateUI();
                  log('連線成功！請等待系統狀態同步...');
+                 // 發送 QUERY_STATUS 確保同步初始狀態 (V23 應會自動發送狀態，但保險起見)
+                 await sendCommand('QUERY_STATUS');
              } catch(e) { log('連線失敗: ' + e.message, 'error'); }
         }
 
@@ -228,6 +233,7 @@
     </script>
 </body>
 </html>
+
 
 
 
