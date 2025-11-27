@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>行動安全系統藍牙控制器</title>
+    <title>行動安全系統</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
@@ -11,6 +11,8 @@
         .log-area { height: 300px; overflow-y: scroll; scroll-behavior: smooth; font-family: 'Courier New', monospace; }
         .control-btn { @apply p-4 rounded-xl shadow-lg transition duration-200 transform hover:scale-[1.02] active:scale-[0.98] focus:outline-none; }
         .control-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .toggle-active { @apply bg-blue-600 text-white; }
+        .toggle-inactive { @apply bg-gray-200 text-gray-700; }
     </style>
 </head>
 <body class="p-4 sm:p-8">
@@ -24,7 +26,8 @@
         <section class="mb-8 p-5 bg-gray-100 rounded-xl flex flex-col sm:flex-row justify-between items-center gap-4 shadow-inner">
             <div class="flex items-center gap-3">
                 <div id="status-icon" class="p-2 rounded-full bg-gray-400 text-white">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"></line><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"></path><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"></path><path d="M10.71 5.05A16 16 0 0 1 22.58 9"></path><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><line x1="12" y1="20" x2="12.01" y2="20"></line></svg>
+                    <!-- Icon Placeholder -->
+                    <div class="w-6 h-6">⚡</div>
                 </div>
                 <div>
                     <p class="text-sm text-gray-500">連線狀態</p>
@@ -39,24 +42,24 @@
         <!-- 控制命令區塊 -->
         <section class="grid grid-cols-2 gap-4 mb-8">
             <!-- 設防/解除 -->
-            <button id="btn-arm" data-command="ARM" disabled class="control-btn bg-yellow-500 text-white hover:bg-yellow-600">
+            <button id="btn-arm" class="control-btn bg-yellow-500 text-white hover:bg-yellow-600">
                 設防 (ARM)
             </button>
-            <button id="btn-disarm" data-command="DISARM" disabled class="control-btn bg-gray-300 text-gray-800 hover:bg-gray-400">
+            <button id="btn-disarm" disabled class="control-btn bg-gray-300 text-gray-800 hover:bg-gray-400">
                 解除設防 (DISARM)
             </button>
 
             <!-- 門鎖/燈光/警報 -->
-            <button id="btn-door" data-command="DOOR_OPEN" disabled class="control-btn bg-teal-500 text-white hover:bg-teal-600">
+            <button id="btn-door" class="control-btn bg-teal-500 text-white hover:bg-teal-600 disabled:bg-gray-300" disabled>
                 開門 (DOOR)
             </button>
-            <button id="btn-light" data-command="LIGHT_TOGGLE" disabled class="control-btn bg-indigo-500 text-white hover:bg-indigo-600">
+            <button id="btn-light" class="control-btn bg-indigo-500 text-white hover:bg-indigo-600 disabled:bg-gray-300" disabled>
                 開/關燈 (LIGHT)
             </button>
-            <button id="btn-alarm" data-command="ALARM_TOGGLE" disabled class="control-btn bg-red-500 text-white hover:bg-red-600 col-span-2">
+            <button id="btn-alarm" class="control-btn bg-red-500 text-white hover:bg-red-600 col-span-2 disabled:bg-gray-300" disabled>
                 開啟/解除警報 (ALARM)
             </button>
-             <button id="btn-read-log" data-command="READ_LOG" disabled class="control-btn bg-purple-600 text-white hover:bg-purple-700 col-span-2">
+             <button id="btn-read-log" class="control-btn bg-purple-600 text-white hover:bg-purple-700 col-span-2 disabled:bg-gray-300" disabled>
                 讀取人員進出登錄紀錄
             </button>
         </section>
@@ -74,9 +77,15 @@
     </div>
 
     <script type="module">
-        // ... Firebase 初始化代碼 (保留原樣，因篇幅省略，請從前一版複製) ...
-        // 為了確保完整性，請將前一版的 Firebase 初始化段落貼在此處
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         
+        // Dummy Firebase init for environment compatibility
+        try {
+            const app = initializeApp(typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {});
+            signInAnonymously(getAuth(app));
+        } catch(e) { console.log("Firebase init skipped"); }
+
         // BLE 設定
         const BLE_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
         const BLE_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Notify
@@ -86,17 +95,19 @@
         let bleDevice, rxChar, txChar;
         let isConnected = false;
         let isArmed = false;
+        let isLightOn = false;
+        let isAlarmOn = false;
 
         // UI 元素
         const statusDisplay = document.getElementById('status-display');
         const connectBtn = document.getElementById('connect-button');
         const btnArm = document.getElementById('btn-arm');
         const btnDisarm = document.getElementById('btn-disarm');
+        const btnDoor = document.getElementById('btn-door');
+        const btnLight = document.getElementById('btn-light');
+        const btnAlarm = document.getElementById('btn-alarm');
+        const btnReadLog = document.getElementById('btn-read-log');
         const logContainer = document.getElementById('log-container');
-        
-        // 日誌緩衝區 (用於處理多行回應)
-        let logBuffer = "";
-        let isReceivingLog = false;
 
         function log(msg, type="info") {
             const p = document.createElement('p');
@@ -114,21 +125,26 @@
             statusDisplay.className = isConnected ? "text-xl font-bold text-green-600" : "text-xl font-bold text-red-600";
             
             // 啟用/禁用按鈕
-            document.querySelectorAll('.control-btn').forEach(btn => btn.disabled = !isConnected);
+            const controls = [btnDoor, btnLight, btnAlarm, btnReadLog];
+            controls.forEach(btn => btn.disabled = !isConnected);
             
             if (isConnected) {
-                // 設防邏輯修正：設防後不能再按設防，解除後不能再按解除
                 btnArm.disabled = isArmed;
                 btnDisarm.disabled = !isArmed;
-                if(isArmed) {
-                     btnArm.classList.replace('bg-yellow-500', 'bg-gray-400');
-                     btnDisarm.classList.replace('bg-gray-300', 'bg-green-500');
-                     btnDisarm.classList.add('text-white');
+                
+                if (isArmed) {
+                    btnArm.className = "control-btn bg-gray-300 text-gray-500";
+                    btnDisarm.className = "control-btn bg-green-500 text-white hover:bg-green-600";
                 } else {
-                     btnArm.classList.replace('bg-gray-400', 'bg-yellow-500');
-                     btnDisarm.classList.replace('bg-green-500', 'bg-gray-300');
-                     btnDisarm.classList.remove('text-white');
+                    btnArm.className = "control-btn bg-yellow-500 text-white hover:bg-yellow-600";
+                    btnDisarm.className = "control-btn bg-gray-300 text-gray-500";
                 }
+
+                btnLight.textContent = isLightOn ? "關燈 (LIGHT OFF)" : "開燈 (LIGHT ON)";
+                btnAlarm.textContent = isAlarmOn ? "解除警報 (ALARM OFF)" : "開啟警報 (ALARM ON)";
+            } else {
+                btnArm.disabled = true;
+                btnDisarm.disabled = true;
             }
         }
 
@@ -149,7 +165,6 @@
                  txChar.addEventListener('characteristicvaluechanged', handleNotifications);
                  
                  isConnected = true;
-                 isArmed = false; // 預設未設防
                  updateUI();
                  log('連線成功！');
              } catch(e) {
@@ -159,6 +174,7 @@
 
         function onDisconnect() {
             isConnected = false;
+            isArmed = false;
             updateUI();
             log('裝置已斷開');
         }
@@ -169,76 +185,64 @@
                 await rxChar.writeValue(new TextEncoder().encode(cmd + TERMINATOR));
                 log('TX: ' + cmd, 'tx');
                 
-                // 本地狀態更新 (為了快速反應 UI)
+                // 本地狀態預測更新 (等待回覆確認)
                 if (cmd === 'ARM') { isArmed = true; updateUI(); }
                 if (cmd === 'DISARM') { isArmed = false; updateUI(); }
+                if (cmd === 'LIGHT_ON') { isLightOn = true; updateUI(); }
+                if (cmd === 'LIGHT_OFF') { isLightOn = false; updateUI(); }
+                if (cmd === 'ALARM_ON') { isAlarmOn = true; updateUI(); }
+                if (cmd === 'ALARM_OFF') { isAlarmOn = false; updateUI(); }
+                
             } catch(e) {
                 log('發送失敗: ' + e);
             }
         }
         
-        // 處理接收資料 (含日誌解析)
+        // 處理接收資料
         function handleNotifications(event) {
             const val = new TextDecoder().decode(event.target.value).trim();
-            
-            // 處理日誌回覆
-            if (val.includes("Number of Login")) {
-                isReceivingLog = true;
-                log("--- 開始讀取登錄紀錄 ---");
-                logBuffer = "";
+            log("RX: " + val, 'rx');
+
+            // 狀態同步
+            if (val.includes("ARMED")) { isArmed = true; updateUI(); }
+            if (val.includes("DISARMED")) { isArmed = false; updateUI(); }
+            if (val.includes("ALARM_TRIGGERED")) {
+                 log("!!! 警報觸發 !!!");
+                 // 可以在這裡加入震動或音效提示
             }
             
-            if (isReceivingLog) {
-                // 解析日誌行 (例如 '26 92 ...')
-                // 簡單判斷：如果是 Hex 數據行，進行解析
-                // 這裡做一個簡單的過濾演示，實際解析在下方
-                if (val.startsWith("'") && val.endsWith("'")) {
-                     const hexStr = val.replace(/'/g, '').replace(/ /g, '');
-                     parseAndLogData(hexStr);
-                } else {
-                     log("RX: " + val, 'rx');
-                }
-
-                if (val.includes("File END")) {
-                    isReceivingLog = false;
-                    log("--- 讀取完成 ---");
-                }
-            } else {
-                log("RX: " + val, 'rx');
-                 // 同步狀態 (如果 ESP32 回報狀態)
-                if (val.includes("STATUS:ARMED")) { isArmed = true; updateUI(); }
-                if (val.includes("STATUS:DISARMED")) { isArmed = false; updateUI(); }
+            // 日誌解析 (簡單範例)
+            // 假設格式 '26 92 ...' 是 Hex Data
+            if (val.startsWith("'") || val.match(/^[0-9A-F ]+$/)) {
+                 // 这里可以添加详细的 Hex to Date 转换逻辑
+                 log("收到紀錄數據: " + val);
             }
-        }
-
-        // 解析 12-byte 資料
-        function parseAndLogData(hexStr) {
-            // 範例 hexStr: 26929A48... (24 chars for 12 bytes)
-            if (hexStr.length !== 24) return;
-            
-            // 提取時間 Byte 0~3 (0-62, 1-12, 1-31, 0-23, 0-59, 0-59)
-            // 這需要位元操作，JS 中處理 BigInt 較方便
-            // 根據您的定義：
-            // Byte 0: 年(6bit) 月high(2bit)
-            // Byte 1: 月low(2bit) 日(5bit) 時high(1bit) ... 比較複雜的 bit 欄位
-            
-            // 簡化顯示原始 Hex 供參考，若需精確解碼需實作 Bit shifting
-            // 這裡示範直接顯示
-            log(`紀錄: [HEX] ${hexStr}`); 
-            // TODO: 實作詳細 Bit 解碼邏輯
         }
 
         connectBtn.addEventListener('click', () => isConnected ? bleDevice.gatt.disconnect() : connect());
         
-        document.querySelectorAll('button[data-command]').forEach(btn => {
-            btn.addEventListener('click', (e) => sendCommand(e.target.dataset.command));
+        btnArm.addEventListener('click', () => sendCommand('ARM'));
+        btnDisarm.addEventListener('click', () => sendCommand('DISARM'));
+        btnDoor.addEventListener('click', () => sendCommand('DOOR_OPEN'));
+        
+        btnLight.addEventListener('click', () => {
+            sendCommand(isLightOn ? 'LIGHT_OFF' : 'LIGHT_ON');
         });
+        
+        btnAlarm.addEventListener('click', () => {
+            sendCommand(isAlarmOn ? 'ALARM_OFF' : 'ALARM_ON');
+        });
+        
+        document.getElementById('btn-read-log').addEventListener('click', () => sendCommand('READ_LOG'));
         
         document.getElementById('clear-log-button').addEventListener('click', () => {
              logContainer.innerHTML = '<p>--- 日誌已清除 ---</p>';
         });
+        
+        updateUI();
     </script>
 </body>
 </html>
+
 
 
