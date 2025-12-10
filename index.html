@@ -44,6 +44,7 @@
             <button id="btn-light" data-cmd="LIGHT_TOGGLE" disabled class="control-btn bg-indigo-500 text-white">開/關燈</button>
             <button id="btn-alarm" data-cmd="ALARM_TOGGLE" disabled class="control-btn bg-red-500 text-white col-span-2">開/關警報</button>
             <button id="btn-log" data-cmd="READ_LOG" disabled class="control-btn bg-purple-600 text-white hover:bg-purple-700 col-span-2">讀取人員進出登錄紀錄</button>
+            <button id="btn-inventory" data-cmd="INVENTORY" disabled class="control-btn bg-orange-500 text-white hover:bg-orange-600 col-span-2">執行 ISO 15693 盤查</button>
         </section>
 
         <!-- 日誌 -->
@@ -75,6 +76,7 @@
         const btnLight = document.getElementById('btn-light');
         const btnAlarm = document.getElementById('btn-alarm');
         const btnLog = document.getElementById('btn-log');
+        const btnInventory = document.getElementById('btn-inventory');
 
         function log(msg, type="info") {
             const p = document.createElement('p');
@@ -92,7 +94,8 @@
             statusDisplay.className = isConnected ? (isArmed ? "text-xl font-bold text-yellow-600" : "text-xl font-bold text-green-600") : "text-xl font-bold text-red-600";
             statusIcon.className = isConnected ? (isArmed ? "p-2 rounded-full bg-yellow-500 text-white" : "p-2 rounded-full bg-green-500 text-white") : "p-2 rounded-full bg-gray-400 text-white";
 
-            [btnDoor, btnLight, btnAlarm, btnLog].forEach(btn => btn.disabled = !isConnected);
+          //  [btnDoor, btnLight, btnAlarm, btnLog].forEach(btn => btn.disabled = !isConnected);
+            [btnDoor, btnLight, btnAlarm, btnLog, btnInventory].forEach(btn => btn.disabled = !isConnected);
             
             if(isConnected) {
                 btnArm.disabled = isArmed;
@@ -164,7 +167,25 @@
                 updateUI(); 
                 log(val, 'error');
             }
-            
+    // =========================================================================
+    // D. 新增：處理 Log 紀錄與 Inventory 盤查的特殊回覆
+    // =========================================================================
+    
+            // 處理 Log 紀錄數量回覆 (由 ESP32 傳遞 LP-2010 的 >> Number of Login: XXX)
+            else if (val.startsWith("LOG_COUNT:")) {
+                // substring(10) 用於移除 "LOG_COUNT:" 9個字元 + 1個空格
+                log(`[登錄紀錄] 數量回覆: ${val.substring(10).trim()}`, 'data'); 
+            }
+            // 處理 Inventory 盤查數量回覆 (由 ESP32 傳遞 LP-2010 的 >> Number of Tags: XXX)
+            else if (val.startsWith("INVENTORY_COUNT:")) {
+                // substring(16) 用於移除 "INVENTORY_COUNT:" 15個字元 + 1個空格
+                log(`[盤查] 數量回覆: ${val.substring(16).trim()}`, 'data');
+            }
+            // 處理資料傳輸結束標記 (由 ESP32 傳遞 LP-2010 的 >> File END)
+            else if (val.includes("FILE_TRANSFER_COMPLETE")) {
+                log("STATUS: 資料傳輸完成", 'data');
+            }
+            // 日誌/資料數據處理 (原始 LOG_DATA: 邏輯, 現在用於 Log 紀錄和 Inventory UID 資料)
             // 日誌數據處理
             else if (val.startsWith("LOG_DATA:")) {
                 const rawData = val.substring(9).trim();
@@ -172,9 +193,12 @@
                 if (rawData.includes("'")) { 
                      log(parseLogData(rawData), 'data');
                 } else {
-                     log(`[日誌原始資料] ${rawData}`, 'data');
+                     // 如果沒有單引號，這可能是單純的 Inventory UID 原始資料行
+                     log(`[原始資料] ${rawData}`, 'data'); 
                 }
-            } else {
+            } 
+             // 處理其他未識別的 BLE 回覆 (LP2010_RX: Ver, Errors 等)
+            else {
                 log("RX: " + val, 'rx');
             }
         }
@@ -223,6 +247,9 @@
         connectBtn.addEventListener('click', () => isConnected ? bleDevice.gatt.disconnect() : connect());
         btnArm.addEventListener('click', () => sendCommand('ARM'));
         btnDisarm.addEventListener('click', () => sendCommand('DISARM'));
+        
+        btnInventory.addEventListener('click', () => sendCommand('INVENTORY'));
+        
         btnDoor.addEventListener('click', () => sendCommand('DOOR_OPEN'));
         btnLight.addEventListener('click', () => sendCommand('LIGHT_TOGGLE'));
         btnAlarm.addEventListener('click', () => sendCommand('ALARM_TOGGLE'));
@@ -233,6 +260,7 @@
     </script>
 </body>
 </html>
+
 
 
 
